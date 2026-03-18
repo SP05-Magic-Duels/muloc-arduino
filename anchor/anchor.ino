@@ -51,7 +51,7 @@
 #include <DW1000NgUtils.hpp>
 
 // Debugging
-#define TRACE_ENABLE 1
+#define TRACE_ENABLE 0
 
 #if (TRACE_ENABLE == 1)
 #define DEBUG_LOG_TRACE(msg, var) Serial.print(msg); Serial.println(var);
@@ -60,8 +60,8 @@
 #endif
 
 // Number of anchors used in the system
-#define ANCHOR_NUM 2
-#define ANCHOR_ID 0
+#define ANCHOR_NUM 3
+#define ANCHOR_ID 2
 
 const uint8_t PIN_RST = 27;  // reset pin
 const uint8_t PIN_IRQ = 34;  // irq pin
@@ -88,15 +88,24 @@ const uint8_t PIN_SS = 4;    // spi select pin
 #define NET_PANID 0xF0F2
 #define RX_ANT_DLY 0
 #define TX_ANT_DLY 32880
-#define DELAY_TIME 600
-#define DELAY_TIME_TURN 600
+#define DELAY_TIME 5000
+#define DELAY_TIME_TURN 5000
 #define RX_AFTER_TX_DELAY 450
-#define RX_TIMEOUT 2500
+#define RX_TIMEOUT 10000
 #define FRAME_LEN_MAX 127
 /* UWB microsecond (uus) to device time unit (dtu, around 15.65 ps) conversion factor.
  * 1 uus = 512 / 499.2 ? and 1 ? = 499.2 * 128 dtu. */
 #define UUS_TO_DWT_TIME 65536
 
+
+struct LogData {
+    uint8_t anchor;
+    uint8_t seq;
+    uint8_t phase;
+    uint16_t rxpc;
+};
+LogData logBuffer[10]; // Buffer for 10 messages
+uint8_t logIndex = 0;
 
 uint8_t rx_buffer[FRAME_LEN_MAX];
 uint32_t status_reg = 0;
@@ -110,7 +119,7 @@ device_configuration_t CONFIG_1 = {
   true,   // extendedFrameLength
   false,  // receiverAutoReenable (unsure)
   true,   // smartPower
-  false,  // frameCheck (unsure)
+  true,  // frameCheck (unsure)
   false,  // nlos (unsure)
   SFDMode::DECAWAVE_SFD,
   Channel::CHANNEL_1,
@@ -125,7 +134,7 @@ device_configuration_t CONFIG_2 = {
   true,   // extendedFrameLength
   false,  // receiverAutoReenable (unsure)
   true,   // smartPower
-  false,  // frameCheck (unsure)
+  true,  // frameCheck (unsure)
   false,  // nlos (unsure)
   SFDMode::DECAWAVE_SFD,
   Channel::CHANNEL_3,
@@ -174,7 +183,7 @@ void set_tx_config(TX_CONFIG config) {
 
 void dw_init() {
   // DEBUG monitoring
-  Serial.begin(115200);
+  Serial.begin(921600);
   Serial.println(F("### DW1000Ng-arduino-receiver-test ###"));
   // initialize the driver
   DW1000Ng::initializeNoInterrupt(PIN_SS);
@@ -281,13 +290,11 @@ void setup() {
 }
 
 void loop() {
-  DEBUG_LOG_TRACE("In main loop.", "")
   if (anchor_state == ANCHOR_LISTEN) {
     DW1000Ng::setPreambleDetectionTimeout(0);
     /* Clear reception timeout to start next ranging process. */
     DW1000Ng::setReceiveFrameWaitTimeoutPeriod(RX_TIMEOUT);
     /* Activate reception immediately. */
-    DEBUG_LOG_TRACE("Anchor state is LISTEN. About to start receive.", "")
     DW1000Ng::startReceive();
   }
 
@@ -301,15 +308,21 @@ void loop() {
     anchor_state = ANCHOR_LISTEN;
   }
 
-  DEBUG_LOG_TRACE("Reception completed (or failed). Anchor state is now: ", anchor_state)
-
   if (isDone) {
-    DEBUG_LOG_TRACE("in isDone loop- isDone is ", isDone)
+    // DEBUG_LOG_TRACE("rx nb ", frame_seq_nb)
+    if (logIndex < 10) {
+      logBuffer[logIndex].anchor = current_tx;
+      logBuffer[logIndex].seq = frame_seq_nb;
+      logBuffer[logIndex].phase = phase_cal;
+      logBuffer[logIndex].rxpc = rxPC;
+      logIndex++;
+    }
     err_num = 0;
     rec_cnt++;
 
     frame_len = DW1000Ng::getReceivedDataLength();
     DW1000Ng::clearTransmitStatus();  // TODO: they only clear TXFRS, this clears more bits
+    DW1000Ng::clearReceiveStatus();
 
     if (frame_len <= FRAME_LEN_MAX) {
       DW1000Ng::getReceivedData(rx_buffer, frame_len);
@@ -330,24 +343,21 @@ void loop() {
 
     // It's our turn to send a message. We should send later if we are anchor 0 and it's time for hooping
     if (((current_tx + 1) % ANCHOR_NUM == ANCHOR_ID) && !((0 == ANCHOR_ID) && (frame_seq_nb % 2 == 1))) {
-      DEBUG_LOG_TRACE("It is now time to send a message. Current tx: ", current_tx)
       // Time delay between the messages from different anchors
       uint32_t delay_time;
-      uint32_t tx_time;
 
       // If we are anchor 0, the frame number should +1 and the delay time should be set to DELAY_TIME_TURN
       if (0 == ANCHOR_ID) {
         delay_time = DELAY_TIME_TURN;
         frame_seq_nb++;
-        DEBUG_LOG_TRACE("This is anchor zero- add a delay and increment frame_seq_nb- now ", frame_seq_nb)
       } else {
         delay_time = DELAY_TIME;
       }
 
       // The tx time is set to "delay_time" seconds after the reception of the last message using delayed transmission
-      tx_time = (rx_ts + (delay_time * UUS_TO_DWT_TIME)) >> 8;
-      byte futureTimeBytes[sizeof(tx_time)];
-      DW1000NgUtils::writeValueToBytes(futureTimeBytes, tx_time, sizeof(tx_time));
+      uint64_t tx_time = rx_ts + ((uint64_t)delay_time * UUS_TO_DWT_TIME);
+      byte futureTimeBytes[LENGTH_TIMESTAMP]; // LENGTH_TIMESTAMP is 5 bytes
+      DW1000NgUtils::writeValueToBytes(futureTimeBytes, tx_time, LENGTH_TIMESTAMP);
       DW1000Ng::setDelayedTRX(futureTimeBytes);
 
       // Config the frame sequence number
@@ -359,13 +369,11 @@ void loop() {
       DW1000Ng::setWait4Response(RX_AFTER_TX_DELAY);
 
       if ((ANCHOR_ID + 1 == ANCHOR_NUM) && (frame_seq_nb % 2 == 1)) {
-        DEBUG_LOG_TRACE("Last anchor about to transmit", "")
         // If we are the last anchor and should perform hopping, we should not start reception before hopping.
         DW1000Ng::setWait4Response(0);  // clears w4r so it won't automatically start listening
         DW1000Ng::startTransmit(TransmitMode::DELAYED);
         is_last_anchor = 1;
       } else {
-        DEBUG_LOG_TRACE("Anchor (not last) about to transmit", "")
         DW1000Ng::startTransmit(TransmitMode::DELAYED);
         anchor_state = ANCHOR_SEND;
       }
@@ -374,8 +382,6 @@ void loop() {
         is_last_anchor = 1;
       }
     }
-
-    DEBUG_LOG_TRACE("Sending done. Now reading data from UWB chip", "")
 
     phase_cal = DW1000Ng::getRawTemperature();  // TODO: verify that this is the right byte!
     maxGC = DW1000Ng::getCirPwrBytes();
@@ -430,10 +436,9 @@ void loop() {
 
       // It's time for hopping
       if (frame_seq_nb % 2 == 1 && anchor_state != ANCHOR_SEND) {
-        DEBUG_LOG_TRACE("Time to frequency hop. current_freq: ", current_freq)
+        // DEBUG_LOG_TRACE("hop ", current_freq)
 
         if (ANCHOR_ID + 1 == ANCHOR_NUM) {
-          DEBUG_LOG_TRACE("This is the last anchor. Waiting for transmit to finish. ANCHOR_ID: ", ANCHOR_ID)
           // If we are the last anchor, we should not start hopping until the message is successfully sent
           while (!(DW1000Ng::isTransmitDone())) {};
         }
@@ -453,10 +458,7 @@ void loop() {
           set_tx_config(TX_CONFIG::CH_2);
         }
 
-        DEBUG_LOG_TRACE("Finished freqency hop. New current_freq: ", current_freq)
-
         if (ANCHOR_ID + 1 == ANCHOR_NUM) {
-          DEBUG_LOG_TRACE("Last anchor now receiving after hopping...", "")
           DW1000Ng::setPreambleDetectionTimeout(0);
           /* Clear reception timeout to start next ranging process. */
           DW1000Ng::setReceiveFrameWaitTimeoutPeriod(RX_TIMEOUT);
@@ -467,18 +469,16 @@ void loop() {
 
         if (0 == ANCHOR_ID) {
           // If we are anchor 0, we should start transmission after hopping
-          DEBUG_LOG_TRACE("Anchor 0 now about to transmit... (waited for after hopping)...", "")
           // Time delay between the messages from different anchors
           uint32_t delay_time;
-          uint32_t tx_time;
 
           delay_time = DELAY_TIME_TURN + 600;
           frame_seq_nb++;
 
           // The tx time is set to "delay_time" seconds after the reception of the last message using delayed transmission
-          tx_time = (rx_ts + (delay_time * UUS_TO_DWT_TIME)) >> 8;
-          byte futureTimeBytes[sizeof(tx_time)];
-          DW1000NgUtils::writeValueToBytes(futureTimeBytes, tx_time, sizeof(tx_time));
+          uint64_t tx_time = rx_ts + ((uint64_t)delay_time * UUS_TO_DWT_TIME);
+          byte futureTimeBytes[LENGTH_TIMESTAMP]; // LENGTH_TIMESTAMP is 5 bytes
+          DW1000NgUtils::writeValueToBytes(futureTimeBytes, tx_time, LENGTH_TIMESTAMP);
           DW1000Ng::setDelayedTRX(futureTimeBytes);
 
 
@@ -496,12 +496,13 @@ void loop() {
 
           DW1000Ng::startTransmit(TransmitMode::DELAYED);
           anchor_state = ANCHOR_SEND;
+          // DEBUG_LOG_TRACE("hop tx ", frame_seq_nb);
         }
       }
     }
   } else {
     err_num++;
-    DEBUG_LOG_TRACE("isDone false- message reception failed. New err_num: ", err_num)
+    DEBUG_LOG_TRACE("err ", err_num);
 
     // Handling packet loss
     if (0 == ANCHOR_ID) {
@@ -516,12 +517,12 @@ void loop() {
         DW1000Ng::forceTRxOff();
         DW1000Ng::applyConfiguration(CONFIG_1);
         set_tx_config(TX_CONFIG::CH_2);
-        DEBUG_LOG_TRACE("Anchor 0 + >= 1 err_num: reset count and set current_freq to 1", "")
       } else {
         delay(3);
       }
 
       DW1000Ng::clearReceiveFailedStatus();
+      DW1000Ng::clearReceiveTimeoutStatus();
 
       // Restart from anchor 0 if any packet is lost
       anchor_state = ANCHOR_SEND;
@@ -535,8 +536,8 @@ void loop() {
       DW1000Ng::setPreambleDetectionTimeout(0);
 
       // Start transmission immediately
-      DEBUG_LOG_TRACE("Anchor 0 about to transmit", "")
       DW1000Ng::startTransmit();
+      // DEBUG_LOG_TRACE("err tx ", frame_seq_nb);
     } else {
       // Hopping Now! If received more than ANCHOR_NUM-2 messages
       if (err_num >= 1) {
@@ -549,11 +550,18 @@ void loop() {
         DW1000Ng::forceTRxOff();
         DW1000Ng::applyConfiguration(CONFIG_1);
         set_tx_config(TX_CONFIG::CH_2);
-        DEBUG_LOG_TRACE("Not anchor 0 + >= 1 err_num: reset count and set current_freq to 1", "")
       }
       DW1000Ng::clearReceiveFailedStatus();
+      DW1000Ng::clearReceiveTimeoutStatus();
     }
-    DEBUG_LOG_TRACE("End of message reception failed clause.", "")
   }
-  DEBUG_LOG_TRACE("End of loop", "")
+
+  if (logIndex >= 10) {
+    for(int i = 0; i < logIndex; i++) {
+        Serial.printf("Tx:%d Seq:%d Ph:%d PC:%d\n", 
+                      logBuffer[i].anchor, logBuffer[i].seq, 
+                      logBuffer[i].phase, logBuffer[i].rxpc);
+    }
+    logIndex = 0; // Reset the buffer
+  }
 }

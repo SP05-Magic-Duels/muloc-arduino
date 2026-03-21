@@ -202,7 +202,7 @@ void loop() {
     frame_seq_nb = rx_buffer[ALL_MSG_SN_IDX];
     rx_ts = DW1000Ng::getReceiveTimestamp();
 
-    phase_cal = DW1000Ng::getRawTemperature(); 
+    DW1000Ng::readRCPhase(&phase_cal); // Check if this is the right byte (instead of getRawTemp?)
     maxGC = DW1000Ng::getCirPwrBytes();
     rxPC = DW1000Ng::getPreambleAccumulationCount();
 

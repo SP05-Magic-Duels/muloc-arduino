@@ -10,6 +10,7 @@ const uint8_t PIN_SS = 4;
 
 #define CIR_LEN 3
 #define ALL_MSG_SN_IDX 2
+#define SINGLE_LEN 13
 #define RX_ANT_DLY 32880
 #define TX_ANT_DLY 32880
 #define NET_PANID 0xF0F2
@@ -24,11 +25,11 @@ struct AnchorOverhearingPacket {
     uint8_t rxpc;
     uint16_t maxgc;
     uint64_t rxtime;
-}
+};
 
 struct AnchorOverhearing {
     struct AnchorOverhearingPacket aopacket[ANCHOR_NUM - 1]; // Overhearing from all tags excluding itself
-}
+};
 
 // --- MATLAB-COMPATIBLE LOGGING STRUCTURE FOR TAG ---
 struct RoundLog {
@@ -195,17 +196,17 @@ void loop() {
           for (int i = 0; i < ANCHOR_NUM - 1; i++) { // Copy the anchor overhearing data from the rx_buffer
             int rx_offset = SINGLE_LEN * i;
             roundLogs[idx].ao[current_tx].aopacket[i].real = rx_buffer[rx_offset] | (rx_buffer[rx_offset + 1] << 8);  //TODO: Not sure if this is right / if I did getAccData right
-            roundLogs[idx].ao[current_tx].aopacket[i].imag[current_tx] = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8); 
-            roundLogs[idx].ao[current_tx].aopacket[i].phase[current_tx] = rx_buffer[rx_offset + 4];
-            roundLogs[idx].ao[current_tx].aopacket[i].rxpc[current_tx] = rx_buffer[rx_offset + 5];
-            roundLogs[idx].ao[current_tx].aopacket[i].maxgc[current_tx] = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7];
+            roundLogs[idx].ao[current_tx].aopacket[i].imag = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8); 
+            roundLogs[idx].ao[current_tx].aopacket[i].phase = rx_buffer[rx_offset + 4];
+            roundLogs[idx].ao[current_tx].aopacket[i].rxpc = rx_buffer[rx_offset + 5];
+            roundLogs[idx].ao[current_tx].aopacket[i].maxgc = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7];
             
             uint64_t rx_time = 0;
             for (int j = 0; j < 5; j++) {
                 rx_time |= rx_buffer[rx_offset + 8 + j];
                 rx_time << 8;
             }
-            roundLogs[idx].ao[current_tx].aopacket[i].rxtime[current_tx] = rx_time;
+            roundLogs[idx].ao[current_tx].aopacket[i].rxtime = rx_time;
           }
           
       }

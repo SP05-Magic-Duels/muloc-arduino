@@ -16,12 +16,27 @@ const uint8_t PIN_SS = 4;
 #define RX_TIMEOUT 10000
 #define FRAME_LEN_MAX 127
 
+// --- ANCHOR-OVERHEARING STRUCTURE TO INCLUDE WITH TAG ---
+struct AnchorOverhearingPacket {
+    uint16_t real; // Overhearing from all tags excluding itself
+    uint16_t imag;
+    uint8_t phase;
+    uint8_t rxpc;
+    uint16_t maxgc;
+    uint64_t rxtime;
+}
+
+struct AnchorOverhearing {
+    struct AnchorOverhearingPacket aopacket[ANCHOR_NUM - 1]; // Overhearing from all tags excluding itself
+}
+
 // --- MATLAB-COMPATIBLE LOGGING STRUCTURE FOR TAG ---
 struct RoundLog {
     uint8_t seq;
     bool readyToPrint;
     bool printed;
     bool has_data[ANCHOR_NUM];
+    AnchorOverhearing ao[ANCHOR_NUM]; // <--- Data overheard by anchors
     uint16_t real[ANCHOR_NUM];
     uint16_t imag[ANCHOR_NUM];
     uint8_t phase[ANCHOR_NUM];
@@ -140,7 +155,8 @@ void loop() {
       frame_seq_nb = rx_buffer[ALL_MSG_SN_IDX];
       uint64_t rx_ts = DW1000Ng::getReceiveTimestamp(); 
 
-      uint8_t phase_cal = DW1000Ng::getRawTemperature(); 
+      uint8_t phase_cal;
+      DW1000Ng::readRCPhase(&phase_cal); //Used to be DW1000Ng::getRawTemperature(); but I think we want this register?
       uint16_t maxGC = DW1000Ng::getCirPwrBytes();
       uint8_t rxPC = DW1000Ng::getPreambleAccumulationCount();
       int32_t carrier_integrator = DW1000Ng::getCarrierIntegrator();
@@ -175,6 +191,23 @@ void loop() {
           roundLogs[idx].maxgc[current_tx] = maxGC;
           roundLogs[idx].rxtime[current_tx] = rx_ts;
           roundLogs[idx].ci[current_tx] = carrier_integrator;
+          
+          for (int i = 0; i < ANCHOR_NUM - 1; i++) { // Copy the anchor overhearing data from the rx_buffer
+            int rx_offset = SINGLE_LEN * i;
+            roundLogs[idx].ao[current_tx].aopacket[i].real = rx_buffer[rx_offset] | (rx_buffer[rx_offset + 1] << 8);  //TODO: Not sure if this is right / if I did getAccData right
+            roundLogs[idx].ao[current_tx].aopacket[i].imag[current_tx] = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8); 
+            roundLogs[idx].ao[current_tx].aopacket[i].phase[current_tx] = rx_buffer[rx_offset + 4];
+            roundLogs[idx].ao[current_tx].aopacket[i].rxpc[current_tx] = rx_buffer[rx_offset + 5];
+            roundLogs[idx].ao[current_tx].aopacket[i].maxgc[current_tx] = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7];
+            
+            uint64_t rx_time = 0;
+            for (int j = 0; j < 5; j++) {
+                rx_time |= rx_buffer[rx_offset + 8 + j];
+                rx_time << 8;
+            }
+            roundLogs[idx].ao[current_tx].aopacket[i].rxtime[current_tx] = rx_time;
+          }
+          
       }
 
       // ----------------------------------------------------
@@ -219,6 +252,21 @@ void loop() {
                       roundLogs[i].rxtime[a],
                       roundLogs[i].ci[a],
                       a);
+                  int anchor = 0;
+                  for (int b = 0; b < ANCHOR_NUM - 1; b++) {
+                    if (a == anchor) { anchor++; } // Print data for all anchors the sender overheard
+
+                    // Format: real, imag, phase, rxpc, maxgc, rxtime, anchor_id
+                    Serial.printf("%04x,%04x,%02x,%02x,%04x,%08x,%d,",
+                      roundLogs[i].ao[a].aopacket[b].real,
+                      roundLogs[i].ao[a].aopacket[b].imag,
+                      roundLogs[i].ao[a].aopacket[b].phase,
+                      roundLogs[i].ao[a].aopacket[b].rxpc,
+                      roundLogs[i].ao[a].aopacket[b].maxgc,
+                      roundLogs[i].ao[a].aopacket[b].rxtime,
+                      anchor);
+                    }
+                    anchor++;
               } else {
                   // Output dummy data if a packet was lost 
                   Serial.printf("0000,0000,00,00,0000,0000000000,00000000,%d,", a);

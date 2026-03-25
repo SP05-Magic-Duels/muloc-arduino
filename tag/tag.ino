@@ -37,14 +37,14 @@ struct RoundLog {
     bool readyToPrint;
     bool printed;
     bool has_data[ANCHOR_NUM];
-    AnchorOverhearing ao[ANCHOR_NUM]; // Data overheard by anchors
+    AnchorOverhearing ao[ANCHOR_NUM]; // <--- Data overheard by anchors
     uint16_t real[ANCHOR_NUM];
     uint16_t imag[ANCHOR_NUM];
     uint8_t phase[ANCHOR_NUM];
     uint8_t rxpc[ANCHOR_NUM];
     uint16_t maxgc[ANCHOR_NUM];
     uint64_t rxtime[ANCHOR_NUM];
-    int32_t ci[ANCHOR_NUM]; // Carrier Integrator for Tag
+    int32_t ci[ANCHOR_NUM]; // <--- Carrier Integrator for Tag
 };
 RoundLog roundLogs[16]; 
 // ---------------------------------------------------
@@ -59,9 +59,9 @@ static uint16_t current_freq = 1;
 
 device_configuration_t TAG_CH1 = {
   true,   
-  false,  
+  false, 
   true,  
-  true,   // frameCheck ON to drop bad CRC frames and noise
+  true,   // frameCheck ON 
   false,  
   SFDMode::DECAWAVE_SFD,
   Channel::CHANNEL_1,
@@ -101,7 +101,7 @@ void dw_init() {
   DW1000Ng::initializeNoInterrupt(PIN_SS);
   DW1000Ng::applyConfiguration(TAG_CH1);
   DW1000Ng::enableLedBlinking();
-  DW1000Ng::setDeviceAddress(0x00); // Tag address
+  DW1000Ng::setDeviceAddress(0x00); 
   DW1000Ng::setNetworkId(NET_PANID);
   DW1000Ng::setRxAntennaDelay(RX_ANT_DLY); 
   DW1000Ng::setTxAntennaDelay(TX_ANT_DLY); 
@@ -116,39 +116,48 @@ void setup() {
   pinMode(0, ledPin);
   dw_init();
 
-  // Initialize MATLAB Log Buffer
   for(int i = 0; i < 16; i++) {
       roundLogs[i].seq = 255;
       roundLogs[i].readyToPrint = false;
       roundLogs[i].printed = true; 
   }
-}
 
-void loop() {
-  
+  // START RECEIVER ONCE AT THE END OF SETUP
   DW1000Ng::setPreambleDetectionTimeout(0);
   DW1000Ng::setReceiveFrameWaitTimeoutPeriod(RX_TIMEOUT);
   DW1000Ng::startReceive();
+}
 
+void loop() {
   bool isDone = false;
-  // --- YIELD TO PREVENT WATCHDOG CRASH ---
+  
+  // Wait for an event
   while (!((isDone = DW1000Ng::isReceiveDone()) || DW1000Ng::isReceiveFailed() || DW1000Ng::isReceiveTimeout())) {
       yield(); 
   }
 
   if (isDone) {
       frame_len = DW1000Ng::getReceivedDataLength();
-      DW1000Ng::clearTransmitStatus();
-      DW1000Ng::clearReceiveStatus(); 
-
       if (frame_len <= FRAME_LEN_MAX) {
           DW1000Ng::getReceivedData(rx_buffer, frame_len);
       }
 
-      // --- SAFETY CHECK ---
+      DW1000Ng::clearTransmitStatus();
+      DW1000Ng::clearReceiveStatus(); 
+
+      // --- BACKGROUND RECEIVE FIX ---
+      // Instantly tell the DW1000 to start listening again! It will catch Anchor 1 
+      // in the background while the ESP32 is busy doing Serial.printf!
+      DW1000Ng::startReceive(); 
+
       if (frame_len < 10 || rx_buffer[8] >= ANCHOR_NUM) {
           isDone = false; 
       }
+  } else {
+      // If packet failed/timeout, clear flags and restart receiver
+      DW1000Ng::clearReceiveFailedStatus();
+      DW1000Ng::clearReceiveTimeoutStatus();
+      DW1000Ng::startReceive();
   }
 
   if (isDone) {
@@ -157,12 +166,11 @@ void loop() {
       uint64_t rx_ts = DW1000Ng::getReceiveTimestamp(); 
 
       uint8_t phase_cal;
-      DW1000Ng::readRCPhase(&phase_cal);
+      DW1000Ng::readRCPhase(&phase_cal); 
       uint16_t maxGC = DW1000Ng::getCirPwrBytes();
       uint8_t rxPC = DW1000Ng::getPreambleAccumulationCount();
       int32_t carrier_integrator = DW1000Ng::getCarrierIntegrator();
 
-      // --- CIR SHIFT FIX APPLIED ---
       uint16_t fp_index = DW1000Ng::getFPPathIdx() >> 6;
       DW1000Ng::getAccData(cir_buffer, CIR_LEN * 4 + 1, (fp_index) * 4); 
 
@@ -171,7 +179,6 @@ void loop() {
       // ----------------------------------------------------
       uint8_t idx = frame_seq_nb % 16;
       if (roundLogs[idx].seq != frame_seq_nb) {
-          // Mark the previous sequence log as ready to print
           uint8_t prev_idx = (frame_seq_nb + 15) % 16;
           if (roundLogs[prev_idx].seq == (uint8_t)(frame_seq_nb - 1)) {
               roundLogs[prev_idx].readyToPrint = true;
@@ -180,31 +187,30 @@ void loop() {
           roundLogs[idx].seq = frame_seq_nb;
           roundLogs[idx].readyToPrint = false;
           roundLogs[idx].printed = false;
-          for (int i = 0; i < ANCHOR_NUM; i++) roundLogs[idx].has_data[i] = false;
+          for(int i = 0; i < ANCHOR_NUM; i++) roundLogs[idx].has_data[i] = false;
       }
-
+      
       if (current_tx < ANCHOR_NUM) {
           roundLogs[idx].has_data[current_tx] = true;
-          roundLogs[idx].real[current_tx] = cir_buffer[5] | (cir_buffer[6] << 8);
-          roundLogs[idx].imag[current_tx] = cir_buffer[7] | (cir_buffer[8] << 8);
+          roundLogs[idx].real[current_tx] = cir_buffer[5] | (cir_buffer[6] << 8); 
+          roundLogs[idx].imag[current_tx] = cir_buffer[7] | (cir_buffer[8] << 8); 
           roundLogs[idx].phase[current_tx] = phase_cal;
           roundLogs[idx].rxpc[current_tx] = rxPC;
           roundLogs[idx].maxgc[current_tx] = maxGC;
           roundLogs[idx].rxtime[current_tx] = rx_ts;
           roundLogs[idx].ci[current_tx] = carrier_integrator;
-
+          
           for (int i = 0; i < ANCHOR_NUM - 1; i++) { 
-            int rx_offset = 10 + (SINGLE_LEN * i); // Add 10 to skip MAC Header!
-
+            int rx_offset = 10 + (SINGLE_LEN * i);
             roundLogs[idx].ao[current_tx].aopacket[i].real = rx_buffer[rx_offset] | (rx_buffer[rx_offset + 1] << 8); 
-            roundLogs[idx].ao[current_tx].aopacket[i].imag = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8);
+            roundLogs[idx].ao[current_tx].aopacket[i].imag = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8); 
             roundLogs[idx].ao[current_tx].aopacket[i].phase = rx_buffer[rx_offset + 4];
             roundLogs[idx].ao[current_tx].aopacket[i].rxpc = rx_buffer[rx_offset + 5];
-            roundLogs[idx].ao[current_tx].aopacket[i].maxgc = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7]; // Big Endian
+            roundLogs[idx].ao[current_tx].aopacket[i].maxgc = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7];
             
             uint64_t rx_time = 0;
             for (int j = 0; j < 5; j++) {
-                rx_time |= ((uint64_t)rx_buffer[rx_offset + 8 + j] << (8 * j)); // Little Endian
+                rx_time |= ((uint64_t)rx_buffer[rx_offset + 8 + j] << (8 * j));
             }
             roundLogs[idx].ao[current_tx].aopacket[i].rxtime = rx_time;
           }
@@ -219,32 +225,29 @@ void loop() {
                   current_freq = 3;
                   DW1000Ng::forceTRxOff();
                   DW1000Ng::applyConfiguration(TAG_CH3);
-              } else if (frame_seq_nb % 4 == 3) {
+                  DW1000Ng::startReceive(); // Restart RX after hop!
+              }
+              else if (frame_seq_nb % 4 == 3) {
                   current_freq = 1;
                   DW1000Ng::forceTRxOff();
                   DW1000Ng::applyConfiguration(TAG_CH1);
+                  DW1000Ng::startReceive(); // Restart RX after hop!
               }
           }
       }
-  } else {
-      DW1000Ng::clearReceiveFailedStatus();
-      DW1000Ng::clearReceiveTimeoutStatus();
-  }
+  } 
 
   // ----------------------------------------------------
-  // --- FLUSH COMPLETED ROUNDS TO SERIAL FOR PYTHON ----
+  // --- FLUSH COMPLETED ROUNDS TO SERIAL FOR MATLAB ----
   // ----------------------------------------------------
-  for (int i = 0; i < 16; i++) {
-    if (roundLogs[i].readyToPrint && !roundLogs[i].printed) {
-
-      // 1. Print 1 line per Anchor (The Anchor Overhearing Data)
-      for (int anc = 0; anc < ANCHOR_NUM; anc++) {
-        if (roundLogs[i].has_data[anc]) {
-          for (int j = 0; j < ANCHOR_NUM - 1; j++) {
-            int target_id = (j < anc) ? j : j + 1;
-
-            // Note: No CI printed for Anchors to match utils.py
-            Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%d,",
+  for(int i = 0; i < 16; i++) {
+      if (roundLogs[i].readyToPrint && !roundLogs[i].printed) {
+          
+          for (int anc = 0; anc < ANCHOR_NUM; anc++) {
+              if (roundLogs[i].has_data[anc]) {
+                  for (int j = 0; j < ANCHOR_NUM - 1; j++) {
+                      int target_id = (j < anc) ? j : j + 1;
+                      Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%d,",
                           roundLogs[i].ao[anc].aopacket[j].real,
                           roundLogs[i].ao[anc].aopacket[j].imag,
                           roundLogs[i].ao[anc].aopacket[j].phase,
@@ -252,32 +255,29 @@ void loop() {
                           roundLogs[i].ao[anc].aopacket[j].maxgc,
                           roundLogs[i].ao[anc].aopacket[j].rxtime,
                           target_id);
+                  }
+              } else {
+                  for (int j = 0; j < ANCHOR_NUM - 1; j++) {
+                      int target_id = (j < anc) ? j : j + 1;
+                      Serial.printf("0000,0000,00,00,0000,0000000000,%d,", target_id);
+                  }
+              }
+              Serial.printf("%02x\n", roundLogs[i].seq);
           }
-        } else {
-          // Pad AO data with zeroes if a packet was lost
-          for (int j = 0; j < ANCHOR_NUM - 1; j++) {
-            int target_id = (j < anc) ? j : j + 1;
-            Serial.printf("0000,0000,00,00,0000,0000000000,%d,", target_id);
+
+          for (int a = 0; a < ANCHOR_NUM; a++) {
+              if (roundLogs[i].has_data[a]) {
+                  Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%08x,%d,",
+                      roundLogs[i].real[a], roundLogs[i].imag[a], roundLogs[i].phase[a],
+                      roundLogs[i].rxpc[a], roundLogs[i].maxgc[a], roundLogs[i].rxtime[a],
+                      roundLogs[i].ci[a], a);
+              } else {
+                  Serial.printf("0000,0000,00,00,0000,0000000000,00000000,%d,", a);
+              }
           }
-        }
-        Serial.printf("%02x\n", roundLogs[i].seq);  // Newline for this anchor's block
+          Serial.printf("%02x\n", roundLogs[i].seq);
+          
+          roundLogs[i].printed = true;
       }
-
-      // 2. Print 1 line for the Tag (The Tag Overhearing Data)
-      for (int a = 0; a < ANCHOR_NUM; a++) {
-        if (roundLogs[i].has_data[a]) {
-          // Note: CI IS printed here for the Tag to match utils.py
-          Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%08x,%d,",
-                        roundLogs[i].real[a], roundLogs[i].imag[a], roundLogs[i].phase[a],
-                        roundLogs[i].rxpc[a], roundLogs[i].maxgc[a], roundLogs[i].rxtime[a],
-                        roundLogs[i].ci[a], a);
-        } else {
-          Serial.printf("0000,0000,00,00,0000,0000000000,00000000,%d,", a);
-        }
-      }
-      Serial.printf("%02x\n", roundLogs[i].seq);  // Newline for the Tag's block
-
-      roundLogs[i].printed = true;
-    }
   }
 }

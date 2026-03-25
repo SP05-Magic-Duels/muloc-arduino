@@ -19,7 +19,7 @@ const uint8_t PIN_SS = 4;
 
 // --- ANCHOR-OVERHEARING STRUCTURE TO INCLUDE WITH TAG ---
 struct AnchorOverhearingPacket {
-    uint16_t real; // Overhearing from all tags excluding itself
+    uint16_t real; 
     uint16_t imag;
     uint8_t phase;
     uint8_t rxpc;
@@ -28,7 +28,7 @@ struct AnchorOverhearingPacket {
 };
 
 struct AnchorOverhearing {
-    struct AnchorOverhearingPacket aopacket[ANCHOR_NUM - 1]; // Overhearing from all tags excluding itself
+    struct AnchorOverhearingPacket aopacket[ANCHOR_NUM - 1]; 
 };
 
 // --- MATLAB-COMPATIBLE LOGGING STRUCTURE FOR TAG ---
@@ -37,14 +37,14 @@ struct RoundLog {
     bool readyToPrint;
     bool printed;
     bool has_data[ANCHOR_NUM];
-    AnchorOverhearing ao[ANCHOR_NUM]; // <--- Data overheard by anchors
+    AnchorOverhearing ao[ANCHOR_NUM]; // Data overheard by anchors
     uint16_t real[ANCHOR_NUM];
     uint16_t imag[ANCHOR_NUM];
     uint8_t phase[ANCHOR_NUM];
     uint8_t rxpc[ANCHOR_NUM];
     uint16_t maxgc[ANCHOR_NUM];
     uint64_t rxtime[ANCHOR_NUM];
-    int32_t ci[ANCHOR_NUM]; // <--- Carrier Integrator for Tag
+    int32_t ci[ANCHOR_NUM]; // Carrier Integrator for Tag
 };
 RoundLog roundLogs[16]; 
 // ---------------------------------------------------
@@ -59,7 +59,7 @@ static uint16_t current_freq = 1;
 
 device_configuration_t TAG_CH1 = {
   true,   
-  false,  // Best to manually re-enable RX in the loop
+  false,  
   true,  
   true,   // frameCheck ON to drop bad CRC frames and noise
   false,  
@@ -131,7 +131,7 @@ void loop() {
   DW1000Ng::startReceive();
 
   bool isDone = false;
-  // --- ADDED YIELD TO PREVENT WATCHDOG CRASH ---
+  // --- YIELD TO PREVENT WATCHDOG CRASH ---
   while (!((isDone = DW1000Ng::isReceiveDone()) || DW1000Ng::isReceiveFailed() || DW1000Ng::isReceiveTimeout())) {
       yield(); 
   }
@@ -157,7 +157,7 @@ void loop() {
       uint64_t rx_ts = DW1000Ng::getReceiveTimestamp(); 
 
       uint8_t phase_cal;
-      DW1000Ng::readRCPhase(&phase_cal); //Used to be DW1000Ng::getRawTemperature(); but I think we want this register?
+      DW1000Ng::readRCPhase(&phase_cal);
       uint16_t maxGC = DW1000Ng::getCirPwrBytes();
       uint8_t rxPC = DW1000Ng::getPreambleAccumulationCount();
       int32_t carrier_integrator = DW1000Ng::getCarrierIntegrator();
@@ -180,49 +180,46 @@ void loop() {
           roundLogs[idx].seq = frame_seq_nb;
           roundLogs[idx].readyToPrint = false;
           roundLogs[idx].printed = false;
-          for(int i = 0; i < ANCHOR_NUM; i++) roundLogs[idx].has_data[i] = false;
+          for (int i = 0; i < ANCHOR_NUM; i++) roundLogs[idx].has_data[i] = false;
       }
-      
+
       if (current_tx < ANCHOR_NUM) {
           roundLogs[idx].has_data[current_tx] = true;
-          roundLogs[idx].real[current_tx] = cir_buffer[5] | (cir_buffer[6] << 8); 
-          roundLogs[idx].imag[current_tx] = cir_buffer[7] | (cir_buffer[8] << 8); 
+          roundLogs[idx].real[current_tx] = cir_buffer[5] | (cir_buffer[6] << 8);
+          roundLogs[idx].imag[current_tx] = cir_buffer[7] | (cir_buffer[8] << 8);
           roundLogs[idx].phase[current_tx] = phase_cal;
           roundLogs[idx].rxpc[current_tx] = rxPC;
           roundLogs[idx].maxgc[current_tx] = maxGC;
           roundLogs[idx].rxtime[current_tx] = rx_ts;
           roundLogs[idx].ci[current_tx] = carrier_integrator;
-          
-          for (int i = 0; i < ANCHOR_NUM - 1; i++) { // Copy the anchor overhearing data from the rx_buffer
-            int rx_offset = SINGLE_LEN * i;
-            roundLogs[idx].ao[current_tx].aopacket[i].real = rx_buffer[rx_offset] | (rx_buffer[rx_offset + 1] << 8);  //TODO: Not sure if this is right / if I did getAccData right
-            roundLogs[idx].ao[current_tx].aopacket[i].imag = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8); 
+
+          for (int i = 0; i < ANCHOR_NUM - 1; i++) { 
+            int rx_offset = 10 + (SINGLE_LEN * i); // Add 10 to skip MAC Header!
+
+            roundLogs[idx].ao[current_tx].aopacket[i].real = rx_buffer[rx_offset] | (rx_buffer[rx_offset + 1] << 8); 
+            roundLogs[idx].ao[current_tx].aopacket[i].imag = rx_buffer[rx_offset + 2] | (rx_buffer[rx_offset + 3] << 8);
             roundLogs[idx].ao[current_tx].aopacket[i].phase = rx_buffer[rx_offset + 4];
             roundLogs[idx].ao[current_tx].aopacket[i].rxpc = rx_buffer[rx_offset + 5];
-            roundLogs[idx].ao[current_tx].aopacket[i].maxgc = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7];
+            roundLogs[idx].ao[current_tx].aopacket[i].maxgc = (rx_buffer[rx_offset + 6] << 8) | rx_buffer[rx_offset + 7]; // Big Endian
             
             uint64_t rx_time = 0;
             for (int j = 0; j < 5; j++) {
-                rx_time |= rx_buffer[rx_offset + 8 + j];
-                rx_time << 8;
+                rx_time |= ((uint64_t)rx_buffer[rx_offset + 8 + j] << (8 * j)); // Little Endian
             }
             roundLogs[idx].ao[current_tx].aopacket[i].rxtime = rx_time;
           }
-          
       }
 
       // ----------------------------------------------------
       // --- FREQUENCY HOPPING LOGIC ---
       // ----------------------------------------------------
-      // If we just heard from the last anchor, prepare to hop if necessary
       if (current_tx == ANCHOR_NUM - 1) {
           if (frame_seq_nb % 2 == 1) {
               if (frame_seq_nb % 4 == 1) {
                   current_freq = 3;
                   DW1000Ng::forceTRxOff();
                   DW1000Ng::applyConfiguration(TAG_CH3);
-              }
-              else if (frame_seq_nb % 4 == 3) {
+              } else if (frame_seq_nb % 4 == 3) {
                   current_freq = 1;
                   DW1000Ng::forceTRxOff();
                   DW1000Ng::applyConfiguration(TAG_CH1);
@@ -235,47 +232,52 @@ void loop() {
   }
 
   // ----------------------------------------------------
-  // --- FLUSH COMPLETED ROUNDS TO SERIAL FOR MATLAB ----
+  // --- FLUSH COMPLETED ROUNDS TO SERIAL FOR PYTHON ----
   // ----------------------------------------------------
-  for(int i = 0; i < 16; i++) {
-      if (roundLogs[i].readyToPrint && !roundLogs[i].printed) {
-          
-          // The Tag listens to ALL anchors, so we don't skip any!
-          for (int a = 0; a < ANCHOR_NUM; a++) {
-              if (roundLogs[i].has_data[a]) {
-                  // Format: real, imag, phase, rxpc, maxgc, rxtime, ci, anchor_id
-                  Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%08x,%d,",
-                      roundLogs[i].real[a],
-                      roundLogs[i].imag[a],
-                      roundLogs[i].phase[a],
-                      roundLogs[i].rxpc[a],
-                      roundLogs[i].maxgc[a],
-                      roundLogs[i].rxtime[a],
-                      roundLogs[i].ci[a],
-                      a);
-                  int anchor = 0;
-                  for (int b = 0; b < ANCHOR_NUM - 1; b++) {
-                    if (a == anchor) { anchor++; } // Print data for all anchors the sender overheard
+  for (int i = 0; i < 16; i++) {
+    if (roundLogs[i].readyToPrint && !roundLogs[i].printed) {
 
-                    // Format: real, imag, phase, rxpc, maxgc, rxtime, anchor_id
-                    Serial.printf("%04x,%04x,%02x,%02x,%04x,%08x,%d,",
-                      roundLogs[i].ao[a].aopacket[b].real,
-                      roundLogs[i].ao[a].aopacket[b].imag,
-                      roundLogs[i].ao[a].aopacket[b].phase,
-                      roundLogs[i].ao[a].aopacket[b].rxpc,
-                      roundLogs[i].ao[a].aopacket[b].maxgc,
-                      roundLogs[i].ao[a].aopacket[b].rxtime,
-                      anchor);
-                    }
-                    anchor++;
-              } else {
-                  // Output dummy data if a packet was lost 
-                  Serial.printf("0000,0000,00,00,0000,0000000000,00000000,%d,", a);
-              }
+      // 1. Print 1 line per Anchor (The Anchor Overhearing Data)
+      for (int anc = 0; anc < ANCHOR_NUM; anc++) {
+        if (roundLogs[i].has_data[anc]) {
+          for (int j = 0; j < ANCHOR_NUM - 1; j++) {
+            int target_id = (j < anc) ? j : j + 1;
+
+            // Note: No CI printed for Anchors to match utils.py
+            Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%d,",
+                          roundLogs[i].ao[anc].aopacket[j].real,
+                          roundLogs[i].ao[anc].aopacket[j].imag,
+                          roundLogs[i].ao[anc].aopacket[j].phase,
+                          roundLogs[i].ao[anc].aopacket[j].rxpc,
+                          roundLogs[i].ao[anc].aopacket[j].maxgc,
+                          roundLogs[i].ao[anc].aopacket[j].rxtime,
+                          target_id);
           }
-          // Print the sequence number
-          Serial.printf("%02x\n", roundLogs[i].seq);
-          roundLogs[i].printed = true;
+        } else {
+          // Pad AO data with zeroes if a packet was lost
+          for (int j = 0; j < ANCHOR_NUM - 1; j++) {
+            int target_id = (j < anc) ? j : j + 1;
+            Serial.printf("0000,0000,00,00,0000,0000000000,%d,", target_id);
+          }
+        }
+        Serial.printf("%02x\n", roundLogs[i].seq);  // Newline for this anchor's block
       }
+
+      // 2. Print 1 line for the Tag (The Tag Overhearing Data)
+      for (int a = 0; a < ANCHOR_NUM; a++) {
+        if (roundLogs[i].has_data[a]) {
+          // Note: CI IS printed here for the Tag to match utils.py
+          Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%08x,%d,",
+                        roundLogs[i].real[a], roundLogs[i].imag[a], roundLogs[i].phase[a],
+                        roundLogs[i].rxpc[a], roundLogs[i].maxgc[a], roundLogs[i].rxtime[a],
+                        roundLogs[i].ci[a], a);
+        } else {
+          Serial.printf("0000,0000,00,00,0000,0000000000,00000000,%d,", a);
+        }
+      }
+      Serial.printf("%02x\n", roundLogs[i].seq);  // Newline for the Tag's block
+
+      roundLogs[i].printed = true;
+    }
   }
 }

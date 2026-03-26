@@ -95,6 +95,7 @@ interrupt_configuration_t interruptConfig = {
 };
 
 void dw_init() {
+  Serial.setTxBufferSize(2048);
   Serial.begin(921600);
   Serial.println(F("### DW1000Ng-arduino-TAG-Passive ###"));
   

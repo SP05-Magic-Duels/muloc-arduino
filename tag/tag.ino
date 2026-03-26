@@ -96,7 +96,7 @@ interrupt_configuration_t interruptConfig = {
 
 void dw_init() {
   Serial.setTxBufferSize(2048);
-  Serial.begin(921600);
+  Serial.begin(2000000);
   Serial.println(F("### DW1000Ng-arduino-TAG-Passive ###"));
   
   DW1000Ng::initializeNoInterrupt(PIN_SS);
@@ -252,39 +252,92 @@ void loop() {
   for(int i = 0; i < 16; i++) {
       if (roundLogs[i].readyToPrint && !roundLogs[i].printed) {
           
+          uint8_t outBuf[234]; // Exact size of one MULoc binary round
+          uint16_t p = 0;
+
+          // 1. Overheard Data from Anchors (160 bytes)
           for (int anc = 0; anc < ANCHOR_NUM; anc++) {
               if (roundLogs[i].has_data[anc]) {
                   for (int j = 0; j < ANCHOR_NUM - 1; j++) {
-                      int target_id = (j < anc) ? j : j + 1;
-                      Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%d,",
-                          roundLogs[i].ao[anc].aopacket[j].real,
-                          roundLogs[i].ao[anc].aopacket[j].imag,
-                          roundLogs[i].ao[anc].aopacket[j].phase,
-                          roundLogs[i].ao[anc].aopacket[j].rxpc,
-                          roundLogs[i].ao[anc].aopacket[j].maxgc,
-                          roundLogs[i].ao[anc].aopacket[j].rxtime,
-                          target_id);
+                      // real (16-bit little-endian)
+                      outBuf[p++] = roundLogs[i].ao[anc].aopacket[j].real & 0xFF;
+                      outBuf[p++] = (roundLogs[i].ao[anc].aopacket[j].real >> 8) & 0xFF;
+                      // imag (16-bit little-endian)
+                      outBuf[p++] = roundLogs[i].ao[anc].aopacket[j].imag & 0xFF;
+                      outBuf[p++] = (roundLogs[i].ao[anc].aopacket[j].imag >> 8) & 0xFF;
+                      // phase (8-bit)
+                      outBuf[p++] = roundLogs[i].ao[anc].aopacket[j].phase;
+                      // rxpc (8-bit)
+                      outBuf[p++] = roundLogs[i].ao[anc].aopacket[j].rxpc;
+                      // maxgc (16-bit big-endian)
+                      outBuf[p++] = (roundLogs[i].ao[anc].aopacket[j].maxgc >> 8) & 0xFF;
+                      outBuf[p++] = roundLogs[i].ao[anc].aopacket[j].maxgc & 0xFF;
+                      // rxtime (40-bit little-endian)
+                      uint64_t rt = roundLogs[i].ao[anc].aopacket[j].rxtime;
+                      outBuf[p++] = rt & 0xFF;
+                      outBuf[p++] = (rt >> 8) & 0xFF;
+                      outBuf[p++] = (rt >> 16) & 0xFF;
+                      outBuf[p++] = (rt >> 24) & 0xFF;
+                      outBuf[p++] = (rt >> 32) & 0xFF;
                   }
               } else {
-                  for (int j = 0; j < ANCHOR_NUM - 1; j++) {
-                      int target_id = (j < anc) ? j : j + 1;
-                      Serial.printf("0000,0000,00,00,0000,0000000000,%d,", target_id);
-                  }
+                  // Zero pad if we missed this anchor (3 targets * 13 bytes = 39 bytes)
+                  for (int k = 0; k < 39; k++) outBuf[p++] = 0;
               }
-              Serial.printf("%02x\n", roundLogs[i].seq);
+              // Sequence number for this anchor group
+              outBuf[p++] = roundLogs[i].seq;
           }
 
+          // 2. Tag Data (68 bytes)
           for (int a = 0; a < ANCHOR_NUM; a++) {
               if (roundLogs[i].has_data[a]) {
-                  Serial.printf("%04x,%04x,%02x,%02x,%04x,%010llx,%08x,%d,",
-                      roundLogs[i].real[a], roundLogs[i].imag[a], roundLogs[i].phase[a],
-                      roundLogs[i].rxpc[a], roundLogs[i].maxgc[a], roundLogs[i].rxtime[a],
-                      roundLogs[i].ci[a], a);
+                  // real (16-bit little-endian)
+                  outBuf[p++] = roundLogs[i].real[a] & 0xFF;
+                  outBuf[p++] = (roundLogs[i].real[a] >> 8) & 0xFF;
+                  // imag (16-bit little-endian)
+                  outBuf[p++] = roundLogs[i].imag[a] & 0xFF;
+                  outBuf[p++] = (roundLogs[i].imag[a] >> 8) & 0xFF;
+                  // phase (8-bit)
+                  outBuf[p++] = roundLogs[i].phase[a];
+                  // rxpc (8-bit)
+                  outBuf[p++] = roundLogs[i].rxpc[a];
+                  // maxgc (16-bit big-endian)
+                  outBuf[p++] = (roundLogs[i].maxgc[a] >> 8) & 0xFF;
+                  outBuf[p++] = roundLogs[i].maxgc[a] & 0xFF;
+                  
+                  // rxtime (40-bit BIG-ENDIAN! - Required by utils.py)
+                  uint64_t rt = roundLogs[i].rxtime[a];
+                  outBuf[p++] = (rt >> 32) & 0xFF;
+                  outBuf[p++] = (rt >> 24) & 0xFF;
+                  outBuf[p++] = (rt >> 16) & 0xFF;
+                  outBuf[p++] = (rt >> 8) & 0xFF;
+                  outBuf[p++] = rt & 0xFF;
+                  
+                  // ci - carrier integrator (32-bit big-endian)
+                  uint32_t ci = (uint32_t)roundLogs[i].ci[a];
+                  outBuf[p++] = (ci >> 24) & 0xFF;
+                  outBuf[p++] = (ci >> 16) & 0xFF;
+                  outBuf[p++] = (ci >> 8) & 0xFF;
+                  outBuf[p++] = ci & 0xFF;
               } else {
-                  Serial.printf("0000,0000,00,00,0000,0000000000,00000000,%d,", a);
+                  // Zero pad if we missed the tag data (17 bytes)
+                  for (int k = 0; k < 17; k++) outBuf[p++] = 0;
               }
           }
-          Serial.printf("%02x\n", roundLogs[i].seq);
+          
+          // 3. Final sequence byte for the Tag data group (1 byte)
+          outBuf[p++] = roundLogs[i].seq;
+
+          // 4. Footer / Sync Prefix (5 bytes)
+          // The Python script consumes these 5 bytes via "curLen += 5" to keep frames aligned
+          outBuf[p++] = 0x07;
+          outBuf[p++] = 0x06;
+          outBuf[p++] = 0x05;
+          outBuf[p++] = 0x04;
+          outBuf[p++] = 0x03;
+
+          // Blast the binary data array over the Serial port
+          Serial.write(outBuf, p);
           
           roundLogs[i].printed = true;
       }

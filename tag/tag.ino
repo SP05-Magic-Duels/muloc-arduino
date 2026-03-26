@@ -143,16 +143,16 @@ void loop() {
           DW1000Ng::getReceivedData(rx_buffer, frame_len);
       }
 
-      DW1000Ng::clearTransmitStatus();
-      DW1000Ng::clearReceiveStatus(); 
-
-      // --- BACKGROUND RECEIVE FIX ---
-      // Instantly tell the DW1000 to start listening again! It will catch Anchor 1 
-      // in the background while the ESP32 is busy doing Serial.printf!
-      DW1000Ng::startReceive(); 
-
       if (frame_len < 10 || rx_buffer[8] >= ANCHOR_NUM) {
           isDone = false; 
+
+        DW1000Ng::clearTransmitStatus();
+        DW1000Ng::clearReceiveStatus(); 
+
+        // --- BACKGROUND RECEIVE FIX ---
+        // Instantly tell the DW1000 to start listening again! It will catch Anchor 1 
+        // in the background while the ESP32 is busy doing Serial.printf!
+        DW1000Ng::startReceive(); 
       }
   } else {
       // If packet failed/timeout, clear flags and restart receiver
@@ -174,6 +174,14 @@ void loop() {
 
       uint16_t fp_index = DW1000Ng::getFPPathIdx() >> 6;
       DW1000Ng::getAccData(cir_buffer, CIR_LEN * 4 + 1, (fp_index) * 4); 
+
+    DW1000Ng::clearTransmitStatus();
+    DW1000Ng::clearReceiveStatus(); 
+
+    // --- BACKGROUND RECEIVE FIX ---
+    // Instantly tell the DW1000 to start listening again! It will catch Anchor 1 
+    // in the background while the ESP32 is busy doing Serial.printf!
+    DW1000Ng::startReceive(); 
 
       // ----------------------------------------------------
       // --- POPULATE THE MATLAB LOG BUFFER FOR THIS ROUND --
